@@ -1,6 +1,20 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <frameobject.h>
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+#include <frameobject.h>
+
+
+#if PY_VERSION_HEX < 0x030B0000
+static inline PyObject* PyFrame_GetLocals(PyFrameObject *frame) {
+    PyFrame_FastToLocals(frame);
+    PyObject *locals = frame->f_locals;
+    Py_XINCREF(locals);
+    return locals;
+}
+#endif
+// ----------------------
 
 #define OP_ANY 0
 #define OP_INSTANCE 1
