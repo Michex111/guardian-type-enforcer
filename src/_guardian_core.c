@@ -371,7 +371,7 @@ static PyMethodDef GuardianMethods[] = {
 
 static struct PyModuleDef guardianmodule = {
     PyModuleDef_HEAD_INIT,
-    "_guardian_core",
+    "_guardian_core", // Ensure this matches the Extension name in setup.py
     "C core for guardian type enforcement",
     -1,
     GuardianMethods
