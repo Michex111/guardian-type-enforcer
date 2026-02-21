@@ -4,6 +4,7 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <frameobject.h>
+#include <stddef.h>
 
 
 #if PY_VERSION_HEX < 0x030B0000
