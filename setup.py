@@ -16,7 +16,7 @@ guardian_core = Extension(
 
 setup(
     name="guardian-type-enforcer",
-    version="2.0.1", # Increment version for the new attempt
+    version="2.0.2", # Increment version for the new attempt
     ext_modules=[guardian_core],
     packages=["guardian"],
     long_description=open("README.md", encoding="utf-8").read(),
