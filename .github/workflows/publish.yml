@@ -3,7 +3,7 @@ name: Build and Publish
 on:
   push:
     tags:
-      - 'v*' # Triggers when you push a tag like v2.0.0
+      - 'v*'
 
 jobs:
   build_wheels:
@@ -11,21 +11,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        # We'll use these to compile for all three major OSs
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.16.2
+        # CHANGED: Updated to v2.16.5 to fix the Windows quoting bug
+        uses: pypa/cibuildwheel@v2.16.5
         env:
-          # Only build for modern Python versions
           CIBW_SKIP: cp36-* cp37-* cp38-* cp39-*
-          # Build for Intel and Apple Silicon on Mac
           CIBW_ARCHS_MACOS: x86_64 arm64
 
       - uses: actions/upload-artifact@v4
         with:
+          # Use a unique name for each OS to avoid overwriting artifacts
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
 
