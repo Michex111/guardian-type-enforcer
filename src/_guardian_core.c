@@ -281,11 +281,8 @@ static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyOb
 static PyObject *StrictGuard_vectorcall(PyObject *self_obj, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
     StrictGuardObject *self = (StrictGuardObject *)self_obj;
 
-    PyThreadState *tstate = PyThreadState_Get();
-    Py_tracefunc old_trace = tstate->c_tracefunc;
-    PyObject *old_tracearg = tstate->c_traceobj;
-    Py_XINCREF(old_tracearg);
-
+    // Python 3.11+ Fix: Do not poke into PyThreadState directly.
+    // We just set our trace function using the public API.
     PyEval_SetTrace(strict_trace_func, self_obj);
 
     Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
@@ -293,8 +290,7 @@ static PyObject *StrictGuard_vectorcall(PyObject *self_obj, PyObject *const *arg
     for (Py_ssize_t i = 0; i < nargs && i < nrules; i++) {
         PyObject *rule_def = PyTuple_GET_ITEM(self->rules, i);
         if (!check_type(args[i], PyTuple_GET_ITEM(rule_def, 2))) {
-            PyEval_SetTrace(old_trace, old_tracearg);
-            Py_XDECREF(old_tracearg);
+            PyEval_SetTrace(NULL, NULL); // Clear trace on early exit
             raise_type_error(PyTuple_GET_ITEM(rule_def, 0), PyTuple_GET_ITEM(rule_def, 1), args[i]);
             return NULL;
         }
@@ -302,8 +298,8 @@ static PyObject *StrictGuard_vectorcall(PyObject *self_obj, PyObject *const *arg
 
     PyObject *result = PyObject_Vectorcall(self->func, args, nargsf, kwnames);
 
-    PyEval_SetTrace(old_trace, old_tracearg);
-    Py_XDECREF(old_tracearg);
+    // Python 3.11+ Fix: Clear the trace function using public API
+    PyEval_SetTrace(NULL, NULL);
 
     if (result && self->check_return && self->ret_rule != Py_None) {
         if (!check_type(result, self->ret_rule)) {
