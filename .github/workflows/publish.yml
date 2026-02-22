@@ -24,10 +24,15 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.16.5
         env:
-          CIBW_BUILD: cp311-* cp312-* cp313-*
+          CIBW_BUILD: cp311-* cp312-* cp313-* cp314-*
           CIBW_ARCHS_MACOS: x86_64 arm64
           # THIS IS KEY: Run your tests inside the virtual build environment
           CIBW_TEST_REQUIRES: pytest pydantic beartype
