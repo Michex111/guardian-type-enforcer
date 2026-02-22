@@ -56,16 +56,6 @@ def _compile_signature(func: Callable):
 
 
 def guard(func: Callable) -> Callable:
-  """
-  Creates a guarded version of the provided function, enforcing rules defined
-  by the compiled signature. This ensures that the input parameters and return
-  value adhere to the specified constraints during runtime.
-
-  :param func: The function to be wrapped and guarded.
-  :type func: Callable
-  :return: A new function with the guarding behavior applied.
-  :rtype: Callable
-  """
   pos_rules, kw_rules, ret_rule, ret_name, check_return = _compile_signature(func)
   return _guardian_core.make_guard(func, pos_rules, kw_rules, ret_rule, ret_name, check_return)
 

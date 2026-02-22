@@ -8,7 +8,7 @@ from beartype.roar import BeartypeCallHintParamViolation, BeartypeCallHintReturn
 
 
 from guardian.guard import guard
-from guardian.strictguard import strictguard
+from guardian.deepguard import deepguard
 from guardian.shield import shield
 from guardian._guardian_core import GuardianTypeError, GuardianAccessError
 
@@ -22,8 +22,8 @@ def guard_add(a: int, b: int) -> int:
   return a + b
 
 
-@strictguard
-def strictguard_add(a: int, b: int) -> int:
+@deepguard
+def deepguard_add(a: int, b: int) -> int:
   return a + b
 
 
@@ -108,23 +108,23 @@ def test_guard_return_enforcement():
 
 
 def test_strictguard_behavior():
-  assert strictguard_add(5, 5) == 10
+  assert deepguard_add(5, 5) == 10
   with pytest.raises(GuardianTypeError):
-    strictguard_add(5, 5.0)
+    deepguard_add(5, 5.0)
 
 
-@strictguard
-def strictguard_local_mutation(val: int) -> int:
+@deepguard
+def deepguard_local_mutation(val: int) -> int:
   x: int = val
   if val < 0:
     x = "string"  # Should trigger strict local type checking
   return x
 
 
-def test_strictguard_stricter_mismatch():
-  assert strictguard_local_mutation(5) == 5
+def test_deepguard_stricter_mismatch():
+  assert deepguard_local_mutation(5) == 5
   with pytest.raises(GuardianTypeError):
-    strictguard_local_mutation(-1)
+    deepguard_local_mutation(-1)
 
 
 def test_shield_correct_initialization():
@@ -247,7 +247,7 @@ def run_benchmarks():
   setup_simple = ""
   results.append(("Standard Func", measure("Standard", "standard_add(1, 2)", setup_simple)))
   results.append(("Guard Func", measure("Guard", "guard_add(1, 2)", setup_simple)))
-  results.append(("StrictGuard Func", measure("StrictGuard", "strictguard_add(1, 2)", setup_simple)))
+  results.append(("DeepGuard Func", measure("DeepGuard", "deepguard_add(1, 2)", setup_simple)))
   results.append(("Beartype Func", measure("Beartype", "beartype_add(1, 2)", setup_simple)))
 
   # 2. Class Instantiation

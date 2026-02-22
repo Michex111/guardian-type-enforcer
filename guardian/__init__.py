@@ -1,7 +1,7 @@
 from .guard import guard
-from .strictguard import strictguard
+from .deepguard import deepguard
 from .shield import shield
 from ._guardian_core import GuardianTypeError
 
-__all__ = ["guard", "strictguard", "shield", "GuardianTypeError"]
+__all__ = ["guard", "deepguard", "shield", "GuardianTypeError"]
 __version__ = "2.1.1"

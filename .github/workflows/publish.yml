@@ -1,9 +1,12 @@
-name: Build and Publish
+name: Build, Test, and Publish
 
 on:
   push:
+    branches:
+      - '*'      # Trigger on all branch pushes
     tags:
-      - 'v*'
+      - 'v*'    # Trigger on version tags
+  pull_request: # Trigger on PRs
 
 jobs:
   build_wheels:
@@ -11,26 +14,33 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # We'll use these to compile for all three major OSs
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Build wheels
-        # CHANGED: Updated to v2.16.5 to fix the Windows quoting bug
         uses: pypa/cibuildwheel@v2.16.5
         env:
           CIBW_BUILD: cp311-* cp312-* cp313-* cp314-*
           CIBW_ARCHS_MACOS: x86_64 arm64
+          # THIS IS KEY: Run your tests inside the virtual build environment
+          CIBW_TEST_REQUIRES: pytest pydantic beartype
+          CIBW_TEST_COMMAND: "pytest {project}/tests/test.py"
 
       - uses: actions/upload-artifact@v4
         with:
-          # Use a unique name for each OS to avoid overwriting artifacts
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
 
   publish_pypi:
+    # ONLY publish if it's a tag push, not a regular branch push
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build_wheels]
     runs-on: ubuntu-latest
     steps:

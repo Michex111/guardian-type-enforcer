@@ -1,57 +1,153 @@
-# Guardian 🛡️
+# 🛡️ Guardian — Sub-Microsecond Runtime Type Enforcement & Access Control for Python
 
-**Maximum performance runtime type enforcement for Python 3.10+**
+Guardian is a blazing-fast runtime type enforcer and data validation framework for Python 3.10+.
 
-Guardian is a C-optimized runtime type checker that ensures your Python functions receive and return exactly the types they expect. It operates at two levels: blazing-fast function boundary enforcement, and strict local-variable execution tracing.
+Unlike traditional Python validation libraries that rely on slow dictionary wrappers, getattr proxies, or __dict__ parsing, Guardian is written entirely as a native C-extension. It intercepts assignments directly at the memory level via the CPython API, delivering O(1) validation that outperforms industry standards like Pydantic (Rust) and Beartype.
 
-Built directly on the CPython C-API using the Vectorcall protocol, Guardian delivers microsecond-level overhead.
+---
 
+## 🚀 Performance Benchmarks
 
+Guardian is engineered for high-throughput backend APIs and data pipelines where nanosecond performance matters.  
+(Benchmarks run for 100,000 iterations against standard Python 3.13)
 
-## Features
-* **`@guard`**: Enforces parameter and return types at the function boundary (~0.67µs overhead).
-* **`@strictguard`**: Enforces boundaries *and* locks local variables to their annotated or initially assigned types dynamically (~13µs overhead).
-* **Comprehensive Typing Support**: Supports `Union` (`|`), `Literal`, `Annotated`, `list[T]`, `dict[K, V]`, `set[T]`, `tuple[T, ...]`, Custom Classes, and Forward References.
-* **C-Level Performance**: Pre-compiled type-check trees and zero Python-level lambda recursion.
+| Operation / Library        | Time (ns / op) | Relative Speed |
+|---------------------------|---------------|----------------|
+| Standard Python Function  | 30.61 ns      | 1.00x          |
+| `@guard` Function         | 80.79 ns      | 2.64x          |
+| Beartype Function         | 241.10 ns     | 7.88x          |
+| Standard / `shield` Init  | 653.75 ns     | N/A            |
+| Pydantic v2 Init (Rust)   | 824.64 ns     | N/A            |
+| `shield` Attribute Set    | 76.26 ns      | N/A            |
+| Pydantic v2 Attribute Set | 194.05 ns     | N/A            |
 
-## Installation
+**Highlights**
+- **Function decorators:** `@guard` is ~3× faster than Beartype  
+- **Class models:** `shield` is ~2.5× faster than Pydantic v2 at attribute assignment  
+
+---
+
+## 📦 Installation
+
+Guardian distributes pre-compiled wheels for Linux, macOS, and Windows.
 
 ```bash
-pip install guardian
-(Note: Guardian utilizes a C extension. If installing from source on Windows, you will need the Visual Studio C++ Build Tools installed.)
-
-Usage1. Function Boundary Enforcement (@guard)
-Use @guard for maximum-speed input/output validation.Python
-
-from guardian import guard
-
-@guard
-def process_data(data: list[int], limit: int | None = None) -> int:
-    if limit is None:
-        return sum(data)
-    return sum(data[:limit])
-
-process_data([1, 2, 3], limit=2)  # OK
-process_data([1, "2", 3])         # GuardianTypeError: Parameter 'data' expected list[int]
-2. Strict Internal Execution Tracing (@strictguard)
-Use @strictguard for mathematically complex or security-sensitive functions where local variable mutation bugs would be catastrophic.Python
-
-from guardian import strictguard
-
-@strictguard
-def strict_math(x: int) -> int:
-    y = 10        # 'y' is dynamically locked to 'int'
-    y = 20        # OK
-    y = "bad"     # GuardianTypeError: Variable 'y' expected int, got str
-    return x + y
+pip install guardian-type-enforcer
 ```
 
+---
 
+## 🛠️ Core Features
 
-## Performance BenchmarkMeasured on Python 3.13 (1,000,000 iterations)
+### 1. `shield` (C-Native Data Models)
 
-| TargetTotal | Time (s) | Overhead/call (µs) |
-|-------------|----------|--------------------|
-| Plain Function | 0.1514 | – |
-| Guardian C (@guard) | 0.8278 | ~0.67 µs |
-| StrictGuard C (@strictguard) | 13.1459 | ~13.0 µs |
+The `shield` class is a high-performance alternative to `@dataclass` or `pydantic.BaseModel`.  
+By inheriting from `shield`, your class becomes a native C-type (`ShieldBase`). It enforces strict typing on all annotated attributes and provides true protected/private access control.
+
+```python
+from guardian.shield import shield
+from guardian._guardian_core import GuardianTypeError, GuardianAccessError
+
+class User(shield):
+    username: str
+    age: int
+    _internal_id: int  # Attributes starting with '_' are private
+
+    def __init__(self, username: str, age: int):
+        self.username = username
+        self.age = age
+        self._internal_id = 9999
+
+# --- 1. Type Enforcement ---
+user = User("Michex", 25)
+
+user.age = 26        # OK
+user.age = "twenty"  # ❌ Raises GuardianTypeError
+
+# --- 2. True Private Access Control ---
+print(user._internal_id)  # ❌ Raises GuardianAccessError
+```
+
+**How it works:**  
+`shield` bypasses Python’s `__setattr__`. Memory assignment and type-checking happen directly in C via `tp_setattro` slots, taking less than 80 nanoseconds. Internal access is verified by walking the CPython frame stack to ensure the caller context owns the `self` pointer.
+
+---
+
+### 2. `@guard` (Boundary Type Enforcement)
+
+Use `@guard` to enforce strict input and return types on your critical functions, API endpoints, or calculations.  
+Supports deeply nested types like `dict[str, list[int | float]]`.
+
+```python
+from typing import Union
+from guardian.guard import guard
+
+@guard
+def process_sensor_data(payload: dict[str, list[Union[int, float]]]) -> bool:
+    return True
+
+# Valid payload
+process_sensor_data({"sensor_A": [1, 2.5, 3]})
+
+# Invalid payload
+process_sensor_data({"sensor_A": [1, 2.5, "3.0"]})
+# ❌ Raises GuardianTypeError
+```
+
+**How it works:**  
+Signatures are compiled into C-structs at import time. During runtime, validation is O(1) positional mapped natively in C via the vectorcall protocol (PEP 590).
+
+---
+
+### 3. `@deepguard` (Local State Profiling)
+
+While `@guard` checks inputs and outputs, `@deepguard` acts as a rigorous state machine enforcer. It ensures that local variables inside your function never mutate into unexpected types during execution.
+
+```python
+from guardian.deepguard import deepguard
+
+@deepguard
+def calculate_discount(price: float) -> float:
+    discount: float = 0.0
+    
+    if price < 0:
+        discount = "N/A"  # ❌ Raises GuardianTypeError when returning
+        
+    return price - discount
+```
+
+**Note:**  
+`@deepguard` utilizes `PyEval_SetProfile` to intercept the local dictionary state upon function return. Because it hooks into interpreter profiling, it carries a ~43µs overhead and should be reserved for high-stakes business logic.
+
+---
+
+## 🧠 Advanced Usage: The Compiler
+
+Guardian automatically compiles complex type hints into flat, recursive integer tuples that the C-core switch statements can evaluate instantly.
+
+**Supported types include:**
+- Primitives (`int`, `str`, `float`, `bool`)
+- Data structures (`list`, `dict`, `set`, `tuple`)
+- Typing constructs (`Union`, `Optional`, `Any`, `Literal`)
+- Deeply nested configurations (`dict[str, tuple[int, ...]]`)
+
+Primitives use branch-predicted fast paths (`PyLong_CheckExact`, `PyUnicode_CheckExact`) to skip `isinstance()` overhead entirely.
+
+---
+
+## 🤝 Contributing
+
+Contributions, issues, and feature requests are welcome.
+
+```bash
+git clone https://github.com/yourusername/guardian-type-enforcer.git
+pip install -e .
+pytest tests/test.py -v
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License.  
+See the `LICENSE` file for details.

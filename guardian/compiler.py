@@ -2,7 +2,6 @@ import types
 import typing
 from typing import Any, Literal, get_args, get_origin, Annotated, Union
 
-# Must match C header macros
 OP_ANY = 0
 OP_INSTANCE = 1
 OP_EXACT = 2

@@ -3,6 +3,14 @@
 #include <frameobject.h>
 #include <stddef.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+    #define likely(x)   __builtin_expect(!!(x), 1)
+    #define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+    #define likely(x)   (x)
+    #define unlikely(x) (x)
+#endif
+
 #if PY_VERSION_HEX < 0x030B0000
 static inline PyObject* PyFrame_GetLocals(PyFrameObject *frame) {
     PyFrame_FastToLocals(frame);
@@ -26,75 +34,83 @@ static inline PyObject* PyFrame_GetLocals(PyFrameObject *frame) {
 static PyObject *GuardianTypeError;
 static PyObject *GuardianAccessError;
 
-static int check_type(PyObject *obj, PyObject *rule) {
-    if (rule == Py_None) return 1;
+static int fast_check_type(PyObject *obj, PyObject *rule) {
+    if (unlikely(rule == Py_None)) return 1;
 
-    long op = PyLong_AsLong(PyTuple_GET_ITEM(rule, 0));
+    long op = PyLong_AS_LONG(PyTuple_GET_ITEM(rule, 0));
     PyObject *arg = PyTuple_GET_ITEM(rule, 1);
 
     switch (op) {
         case OP_ANY: return 1;
-        case OP_EXACT: return Py_TYPE(obj) == (PyTypeObject *)arg;
-        case OP_INSTANCE: return PyObject_IsInstance(obj, arg);
+        case OP_EXACT: {
+            if (arg == (PyObject *)&PyLong_Type) return PyLong_CheckExact(obj);
+            if (arg == (PyObject *)&PyUnicode_Type) return PyUnicode_CheckExact(obj);
+            if (arg == (PyObject *)&PyFloat_Type) return PyFloat_CheckExact(obj);
+            if (arg == (PyObject *)&PyBool_Type) return PyBool_Check(obj);
+            if (arg == (PyObject *)Py_TYPE(Py_None)) return obj == Py_None;
+            return Py_TYPE(obj) == (PyTypeObject *)arg;
+        }
+        case OP_INSTANCE:
+            return PyObject_IsInstance(obj, arg);
         case OP_UNION: {
             Py_ssize_t size = PyTuple_GET_SIZE(arg);
             for (Py_ssize_t i = 0; i < size; i++) {
-                if (check_type(obj, PyTuple_GET_ITEM(arg, i))) return 1;
+                if (fast_check_type(obj, PyTuple_GET_ITEM(arg, i))) return 1;
             }
             return 0;
         }
         case OP_LIST: {
-            if (!PyList_Check(obj)) return 0;
+            if (unlikely(!PyList_Check(obj))) return 0;
             if (arg == Py_None) return 1;
             Py_ssize_t size = PyList_GET_SIZE(obj);
             for (Py_ssize_t i = 0; i < size; i++) {
-                if (!check_type(PyList_GET_ITEM(obj, i), arg)) return 0;
+                if (!fast_check_type(PyList_GET_ITEM(obj, i), arg)) return 0;
             }
             return 1;
         }
         case OP_DICT: {
-            if (!PyDict_Check(obj)) return 0;
+            if (unlikely(!PyDict_Check(obj))) return 0;
             if (arg == Py_None) return 1;
             PyObject *k_rule = PyTuple_GET_ITEM(arg, 0);
             PyObject *v_rule = PyTuple_GET_ITEM(arg, 1);
             PyObject *key, *value;
             Py_ssize_t pos = 0;
             while (PyDict_Next(obj, &pos, &key, &value)) {
-                if (!check_type(key, k_rule) || !check_type(value, v_rule)) return 0;
+                if (!fast_check_type(key, k_rule) || !fast_check_type(value, v_rule)) return 0;
             }
             return 1;
         }
         case OP_TUPLE_VAR: {
-            if (!PyTuple_Check(obj)) return 0;
+            if (unlikely(!PyTuple_Check(obj))) return 0;
             Py_ssize_t size = PyTuple_GET_SIZE(obj);
             for (Py_ssize_t i = 0; i < size; i++) {
-                if (!check_type(PyTuple_GET_ITEM(obj, i), arg)) return 0;
+                if (!fast_check_type(PyTuple_GET_ITEM(obj, i), arg)) return 0;
             }
             return 1;
         }
         case OP_TUPLE_FIXED: {
-            if (!PyTuple_Check(obj)) return 0;
+            if (unlikely(!PyTuple_Check(obj))) return 0;
             Py_ssize_t size = PyTuple_GET_SIZE(arg);
             if (PyTuple_GET_SIZE(obj) != size) return 0;
             for (Py_ssize_t i = 0; i < size; i++) {
-                if (!check_type(PyTuple_GET_ITEM(obj, i), PyTuple_GET_ITEM(arg, i))) return 0;
+                if (!fast_check_type(PyTuple_GET_ITEM(obj, i), PyTuple_GET_ITEM(arg, i))) return 0;
             }
             return 1;
         }
         case OP_SET: {
-            if (!PyAnySet_Check(obj)) return 0;
+            if (unlikely(!PyAnySet_Check(obj))) return 0;
             if (arg == Py_None) return 1;
-            PyObject *iterator = PyObject_GetIter(obj);
+            PyObject *iter = PyObject_GetIter(obj);
             PyObject *item;
-            while ((item = PyIter_Next(iterator))) {
-                int res = check_type(item, arg);
+            while ((item = PyIter_Next(iter))) {
+                int res = fast_check_type(item, arg);
                 Py_DECREF(item);
                 if (!res) {
-                    Py_DECREF(iterator);
+                    Py_DECREF(iter);
                     return 0;
                 }
             }
-            Py_DECREF(iterator);
+            Py_DECREF(iter);
             return 1;
         }
         case OP_LITERAL: {
@@ -114,13 +130,6 @@ static void raise_type_error(PyObject *param_name, PyObject *expected_name, PyOb
 }
 
 static int check_internal_access(PyObject *self, const char *name_str) {
-    if (!name_str || name_str[0] != '_') return 1;
-
-    size_t len = strlen(name_str);
-    if (len >= 4 && name_str[0] == '_' && name_str[1] == '_' && name_str[len-1] == '_' && name_str[len-2] == '_') {
-        return 1;
-    }
-
     int is_internal = 0;
 #if PY_VERSION_HEX >= 0x030B0000
     PyFrameObject *frame = PyThreadState_GetFrame(PyThreadState_Get());
@@ -128,7 +137,6 @@ static int check_internal_access(PyObject *self, const char *name_str) {
     PyFrameObject *frame = PyEval_GetFrame();
     Py_XINCREF(frame);
 #endif
-
     PyFrameObject *f = frame;
     while (f) {
         PyObject *locals = PyFrame_GetLocals(f);
@@ -154,49 +162,58 @@ static int check_internal_access(PyObject *self, const char *name_str) {
         f = back;
     }
     if (f) Py_DECREF(f);
-
     return is_internal;
 }
 
 static int shield_setattro(PyObject *self, PyObject *name, PyObject *value) {
-    if (!PyUnicode_Check(name)) return PyObject_GenericSetAttr(self, name, value);
+    if (unlikely(!PyUnicode_Check(name))) return PyObject_GenericSetAttr(self, name, value);
 
     const char *name_str = PyUnicode_AsUTF8(name);
 
-    if (!check_internal_access(self, name_str)) {
-        PyErr_Format(GuardianAccessError, "External access denied: Cannot modify protected/private attribute '%s'.", name_str);
-        return -1;
-    }
-
-    if (value == NULL) return PyObject_GenericSetAttr(self, name, value);
-
-    PyTypeObject *type = Py_TYPE(self);
-    PyObject *rules = PyObject_GetAttrString((PyObject *)type, "__shield_rules__");
-
-    if (rules && PyDict_Check(rules)) {
-        PyObject *rule_def = PyDict_GetItem(rules, name);
-        if (rule_def) {
-            PyObject *rule = PyTuple_GET_ITEM(rule_def, 0);
-            if (!check_type(value, rule)) {
-                PyObject *expected = PyTuple_GET_ITEM(rule_def, 1);
-                raise_type_error(name, expected, value);
-                Py_DECREF(rules);
+    if (unlikely(name_str[0] == '_')) {
+        size_t len = strlen(name_str);
+        if (!(len >= 4 && name_str[1] == '_' && name_str[len-1] == '_' && name_str[len-2] == '_')) {
+            if (!check_internal_access(self, name_str)) {
+                PyErr_Format(GuardianAccessError, "External access denied: Cannot modify protected/private attribute '%s'.", name_str);
                 return -1;
             }
         }
     }
-    if (rules) Py_DECREF(rules); else PyErr_Clear();
+
+    if (unlikely(value == NULL)) return PyObject_GenericSetAttr(self, name, value);
+
+    PyTypeObject *type = Py_TYPE(self);
+    PyObject *rules_dict = PyDict_GetItemString(type->tp_dict, "__shield_rules__");
+
+    if (likely(rules_dict != NULL)) {
+        PyObject *rule_def = PyDict_GetItemWithError(rules_dict, name);
+        if (rule_def) {
+            PyObject *rule = PyTuple_GET_ITEM(rule_def, 0);
+            if (unlikely(!fast_check_type(value, rule))) {
+                PyObject *expected = PyTuple_GET_ITEM(rule_def, 1);
+                raise_type_error(name, expected, value);
+                return -1;
+            }
+        }
+    } else {
+        PyErr_Clear();
+    }
 
     return PyObject_GenericSetAttr(self, name, value);
 }
 
 static PyObject* shield_getattro(PyObject *self, PyObject *name) {
-    if (!PyUnicode_Check(name)) return PyObject_GenericGetAttr(self, name);
+    if (unlikely(!PyUnicode_Check(name))) return PyObject_GenericGetAttr(self, name);
 
     const char *name_str = PyUnicode_AsUTF8(name);
-    if (!check_internal_access(self, name_str)) {
-        PyErr_Format(GuardianAccessError, "External access denied: Cannot read protected/private attribute '%s'.", name_str);
-        return NULL;
+    if (unlikely(name_str[0] == '_')) {
+        size_t len = strlen(name_str);
+        if (!(len >= 4 && name_str[1] == '_' && name_str[len-1] == '_' && name_str[len-2] == '_')) {
+            if (!check_internal_access(self, name_str)) {
+                PyErr_Format(GuardianAccessError, "External access denied: Cannot read protected/private attribute '%s'.", name_str);
+                return NULL;
+            }
+        }
     }
 
     return PyObject_GenericGetAttr(self, name);
@@ -212,12 +229,13 @@ static PyTypeObject ShieldBaseType = {
     .tp_new = PyType_GenericNew,
 };
 
+// --- CORE OBJECTS ---
 typedef struct {
     PyObject_HEAD
     vectorcallfunc vectorcall;
     PyObject *func;
-    PyObject *rules;
-    PyObject *kw_names;
+    PyObject *pos_rules;
+    PyObject *kw_rules;
     PyObject *ret_rule;
     PyObject *ret_name;
     int check_return;
@@ -225,40 +243,56 @@ typedef struct {
 
 static void Guard_dealloc(GuardObject *self) {
     Py_XDECREF(self->func);
-    Py_XDECREF(self->rules);
-    Py_XDECREF(self->kw_names);
+    Py_XDECREF(self->pos_rules);
+    Py_XDECREF(self->kw_rules);
     Py_XDECREF(self->ret_rule);
     Py_XDECREF(self->ret_name);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
+// THE FIX: Descriptor Protocol binds the C-object to instances (injects `self` into args)
+static PyObject *Guard_descr_get(PyObject *self, PyObject *obj, PyObject *type) {
+    if (obj == NULL || obj == Py_None) {
+        Py_INCREF(self);
+        return self;
+    }
+    return PyMethod_New(self, obj);
+}
+
+static PyObject* Guard_getattro(PyObject *self, PyObject *name) {
+    PyObject *res = PyObject_GenericGetAttr(self, name);
+    if (res != NULL) return res;
+    PyErr_Clear();
+    return PyObject_GetAttr(((GuardObject*)self)->func, name);
+}
+
 static PyObject *Guard_vectorcall(PyObject *self_obj, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
     GuardObject *self = (GuardObject *)self_obj;
     Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
-    Py_ssize_t nrules = PyTuple_GET_SIZE(self->rules);
 
-    for (Py_ssize_t i = 0; i < nargs && i < nrules; i++) {
-        PyObject *rule_def = PyTuple_GET_ITEM(self->rules, i);
-        PyObject *rule = PyTuple_GET_ITEM(rule_def, 2);
-        if (!check_type(args[i], rule)) {
-            raise_type_error(PyTuple_GET_ITEM(rule_def, 0), PyTuple_GET_ITEM(rule_def, 1), args[i]);
-            return NULL;
+    Py_ssize_t n_pos = PyTuple_GET_SIZE(self->pos_rules);
+    for (Py_ssize_t i = 0; i < nargs && i < n_pos; i++) {
+        PyObject *rule_def = PyTuple_GET_ITEM(self->pos_rules, i);
+        if (rule_def != Py_None) {
+            PyObject *rule = PyTuple_GET_ITEM(rule_def, 2);
+            if (unlikely(!fast_check_type(args[i], rule))) {
+                raise_type_error(PyTuple_GET_ITEM(rule_def, 0), PyTuple_GET_ITEM(rule_def, 1), args[i]);
+                return NULL;
+            }
         }
     }
 
-    if (kwnames != NULL) {
+    if (unlikely(kwnames != NULL)) {
         Py_ssize_t nkwargs = PyTuple_GET_SIZE(kwnames);
         for (Py_ssize_t i = 0; i < nkwargs; i++) {
             PyObject *kw = PyTuple_GET_ITEM(kwnames, i);
             PyObject *val = args[nargs + i];
-            for (Py_ssize_t j = 0; j < nrules; j++) {
-                PyObject *rule_def = PyTuple_GET_ITEM(self->rules, j);
-                if (PyUnicode_Compare(kw, PyTuple_GET_ITEM(rule_def, 0)) == 0) {
-                    if (!check_type(val, PyTuple_GET_ITEM(rule_def, 2))) {
-                        raise_type_error(kw, PyTuple_GET_ITEM(rule_def, 1), val);
-                        return NULL;
-                    }
-                    break;
+
+            PyObject *rule_def = PyDict_GetItemWithError(self->kw_rules, kw);
+            if (rule_def) {
+                if (unlikely(!fast_check_type(val, PyTuple_GET_ITEM(rule_def, 2)))) {
+                    raise_type_error(kw, PyTuple_GET_ITEM(rule_def, 1), val);
+                    return NULL;
                 }
             }
         }
@@ -267,7 +301,7 @@ static PyObject *Guard_vectorcall(PyObject *self_obj, PyObject *const *args, siz
     PyObject *result = PyObject_Vectorcall(self->func, args, nargsf, kwnames);
 
     if (result && self->check_return && self->ret_rule != Py_None) {
-        if (!check_type(result, self->ret_rule)) {
+        if (unlikely(!fast_check_type(result, self->ret_rule))) {
             raise_type_error(PyUnicode_FromString("return"), self->ret_name, result);
             Py_DECREF(result);
             return NULL;
@@ -283,25 +317,23 @@ static PyTypeObject GuardType = {
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_VECTORCALL,
     .tp_dealloc = (destructor)Guard_dealloc,
     .tp_call = PyVectorcall_Call,
+    .tp_getattro = Guard_getattro,
+    .tp_descr_get = Guard_descr_get, // Binds method accurately
 };
 
-// -------------------------------------------------------------
-// STRICT GUARD FIX: Removed clunky local_types dictionary
-// -------------------------------------------------------------
 typedef struct {
     PyObject_HEAD
     vectorcallfunc vectorcall;
     PyObject *func;
     PyObject *func_code;
-    PyObject *rules;
-    PyObject *kw_names;
+    PyObject *pos_rules;
+    PyObject *kw_rules;
     PyObject *ret_rule;
     PyObject *ret_name;
     int check_return;
 } StrictGuardObject;
 
 static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg) {
-    // 1. FAST EXIT: Only inspect locals when the function is finished and returning
     if (what != PyTrace_RETURN) return 0;
 
     StrictGuardObject *self = (StrictGuardObject *)obj;
@@ -314,57 +346,72 @@ static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyOb
     PyObject *locals = PyFrame_GetLocals(frame);
     if (!locals) return 0;
 
-    // 2. O(1) LOOKUP: Pluck the exact variables we need straight from the Proxy
-    Py_ssize_t nrules = PyTuple_GET_SIZE(self->rules);
-    for (Py_ssize_t i = 0; i < nrules; i++) {
-        PyObject *rule_def = PyTuple_GET_ITEM(self->rules, i);
-        PyObject *key = PyTuple_GET_ITEM(rule_def, 0);
-        PyObject *rule = PyTuple_GET_ITEM(rule_def, 2);
-
-        const char *key_str = PyUnicode_AsUTF8(key);
-        PyObject *val = PyMapping_GetItemString(locals, key_str);
-
+    PyObject *key, *rule_def;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(self->kw_rules, &pos, &key, &rule_def)) {
+        PyObject *val = PyMapping_GetItemString(locals, PyUnicode_AsUTF8(key));
         if (val) {
-            if (!check_type(val, rule)) {
+            PyObject *rule = PyTuple_GET_ITEM(rule_def, 2);
+            if (unlikely(!fast_check_type(val, rule))) {
                 raise_type_error(key, PyTuple_GET_ITEM(rule_def, 1), val);
                 Py_DECREF(val);
                 Py_DECREF(locals);
-                return -1; // Abort and raise
+                return -1;
             }
             Py_DECREF(val);
         } else {
-            PyErr_Clear(); // Variable might not be initialized in this logic path, ignore.
+            PyErr_Clear();
         }
     }
-
     Py_DECREF(locals);
     return 0;
+}
+
+static PyObject* StrictGuard_getattro(PyObject *self, PyObject *name) {
+    PyObject *res = PyObject_GenericGetAttr(self, name);
+    if (res != NULL) return res;
+    PyErr_Clear();
+    return PyObject_GetAttr(((StrictGuardObject*)self)->func, name);
 }
 
 static PyObject *StrictGuard_vectorcall(PyObject *self_obj, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
     StrictGuardObject *self = (StrictGuardObject *)self_obj;
 
-    // 3. PROFILER FIX: SetProfile instead of SetTrace drops O(N) line-checking completely
     PyEval_SetProfile(strict_trace_func, self_obj);
 
     Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
-    Py_ssize_t nrules = PyTuple_GET_SIZE(self->rules);
-    for (Py_ssize_t i = 0; i < nargs && i < nrules; i++) {
-        PyObject *rule_def = PyTuple_GET_ITEM(self->rules, i);
-        if (!check_type(args[i], PyTuple_GET_ITEM(rule_def, 2))) {
-            PyEval_SetProfile(NULL, NULL);
-            raise_type_error(PyTuple_GET_ITEM(rule_def, 0), PyTuple_GET_ITEM(rule_def, 1), args[i]);
-            return NULL;
+    Py_ssize_t n_pos = PyTuple_GET_SIZE(self->pos_rules);
+    for (Py_ssize_t i = 0; i < nargs && i < n_pos; i++) {
+        PyObject *rule_def = PyTuple_GET_ITEM(self->pos_rules, i);
+        if (rule_def != Py_None) {
+            if (unlikely(!fast_check_type(args[i], PyTuple_GET_ITEM(rule_def, 2)))) {
+                PyEval_SetProfile(NULL, NULL);
+                raise_type_error(PyTuple_GET_ITEM(rule_def, 0), PyTuple_GET_ITEM(rule_def, 1), args[i]);
+                return NULL;
+            }
+        }
+    }
+
+    if (unlikely(kwnames != NULL)) {
+        Py_ssize_t nkwargs = PyTuple_GET_SIZE(kwnames);
+        for (Py_ssize_t i = 0; i < nkwargs; i++) {
+            PyObject *kw = PyTuple_GET_ITEM(kwnames, i);
+            PyObject *rule_def = PyDict_GetItemWithError(self->kw_rules, kw);
+            if (rule_def) {
+                if (unlikely(!fast_check_type(args[nargs + i], PyTuple_GET_ITEM(rule_def, 2)))) {
+                    PyEval_SetProfile(NULL, NULL);
+                    raise_type_error(kw, PyTuple_GET_ITEM(rule_def, 1), args[nargs + i]);
+                    return NULL;
+                }
+            }
         }
     }
 
     PyObject *result = PyObject_Vectorcall(self->func, args, nargsf, kwnames);
-
-    // Clear profiler immediately
     PyEval_SetProfile(NULL, NULL);
 
     if (result && self->check_return && self->ret_rule != Py_None) {
-        if (!check_type(result, self->ret_rule)) {
+        if (unlikely(!fast_check_type(result, self->ret_rule))) {
             raise_type_error(PyUnicode_FromString("return"), self->ret_name, result);
             Py_DECREF(result);
             return NULL;
@@ -376,8 +423,8 @@ static PyObject *StrictGuard_vectorcall(PyObject *self_obj, PyObject *const *arg
 static void StrictGuard_dealloc(StrictGuardObject *self) {
     Py_XDECREF(self->func);
     Py_XDECREF(self->func_code);
-    Py_XDECREF(self->rules);
-    Py_XDECREF(self->kw_names);
+    Py_XDECREF(self->pos_rules);
+    Py_XDECREF(self->kw_rules);
     Py_XDECREF(self->ret_rule);
     Py_XDECREF(self->ret_name);
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -390,19 +437,21 @@ static PyTypeObject StrictGuardType = {
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_VECTORCALL,
     .tp_dealloc = (destructor)StrictGuard_dealloc,
     .tp_call = PyVectorcall_Call,
+    .tp_getattro = StrictGuard_getattro,
+    .tp_descr_get = Guard_descr_get, // Binds method accurately
 };
 
 static PyObject* make_guard(PyObject *module, PyObject *args) {
-    PyObject *func, *rules, *kw_names, *ret_rule, *ret_name;
+    PyObject *func, *pos_rules, *kw_rules, *ret_rule, *ret_name;
     int check_return;
-    if (!PyArg_ParseTuple(args, "OOOOOp", &func, &rules, &kw_names, &ret_rule, &ret_name, &check_return)) return NULL;
+    if (!PyArg_ParseTuple(args, "OOOOOp", &func, &pos_rules, &kw_rules, &ret_rule, &ret_name, &check_return)) return NULL;
 
     GuardObject *guard = PyObject_New(GuardObject, &GuardType);
-    Py_INCREF(func); Py_INCREF(rules); Py_INCREF(kw_names); Py_INCREF(ret_rule); Py_INCREF(ret_name);
+    Py_INCREF(func); Py_INCREF(pos_rules); Py_INCREF(kw_rules); Py_INCREF(ret_rule); Py_INCREF(ret_name);
     guard->vectorcall = Guard_vectorcall;
     guard->func = func;
-    guard->rules = rules;
-    guard->kw_names = kw_names;
+    guard->pos_rules = pos_rules;
+    guard->kw_rules = kw_rules;
     guard->ret_rule = ret_rule;
     guard->ret_name = ret_name;
     guard->check_return = check_return;
@@ -411,20 +460,17 @@ static PyObject* make_guard(PyObject *module, PyObject *args) {
 }
 
 static PyObject* make_strictguard(PyObject *module, PyObject *args) {
-    PyObject *func, *rules, *kw_names, *ret_rule, *ret_name;
+    PyObject *func, *pos_rules, *kw_rules, *ret_rule, *ret_name;
     int check_return;
-    if (!PyArg_ParseTuple(args, "OOOOOp", &func, &rules, &kw_names, &ret_rule, &ret_name, &check_return)) return NULL;
+    if (!PyArg_ParseTuple(args, "OOOOOp", &func, &pos_rules, &kw_rules, &ret_rule, &ret_name, &check_return)) return NULL;
 
     StrictGuardObject *guard = PyObject_New(StrictGuardObject, &StrictGuardType);
-    Py_INCREF(func); Py_INCREF(rules); Py_INCREF(kw_names); Py_INCREF(ret_rule); Py_INCREF(ret_name);
+    Py_INCREF(func); Py_INCREF(pos_rules); Py_INCREF(kw_rules); Py_INCREF(ret_rule); Py_INCREF(ret_name);
     guard->vectorcall = StrictGuard_vectorcall;
     guard->func = func;
-
     guard->func_code = PyObject_GetAttrString(func, "__code__");
-    if (!guard->func_code) PyErr_Clear();
-
-    guard->rules = rules;
-    guard->kw_names = kw_names;
+    guard->pos_rules = pos_rules;
+    guard->kw_rules = kw_rules;
     guard->ret_rule = ret_rule;
     guard->ret_name = ret_name;
     guard->check_return = check_return;
@@ -439,11 +485,7 @@ static PyMethodDef GuardianMethods[] = {
 };
 
 static struct PyModuleDef guardianmodule = {
-    PyModuleDef_HEAD_INIT,
-    "_guardian_core",
-    "C core for guardian type enforcement",
-    -1,
-    GuardianMethods
+    PyModuleDef_HEAD_INIT, "_guardian_core", "C core for guardian type enforcement", -1, GuardianMethods
 };
 
 PyMODINIT_FUNC PyInit__guardian_core(void) {
