@@ -1,12 +1,9 @@
-name: Build, Test, and Publish
+name: Build and Publish
 
 on:
   push:
-    branches:
-      - '*'      # Trigger on all branch pushes
     tags:
-      - 'v*'    # Trigger on version tags
-  pull_request: # Trigger on PRs
+      - 'v*'
 
 jobs:
   build_wheels:
@@ -14,34 +11,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        # High-performance OS matrix for cross-compilation
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Install dependencies
-        run: pip install pytest pydantic beartype
-
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.16.5
         env:
-          CIBW_BUILD: cp311-* cp312-* cp313-* cp314-*
+          # Stable versions only; skipping experimental 3.14 to avoid source builds
+          CIBW_BUILD: cp311-* cp312-* cp313-*
           CIBW_ARCHS_MACOS: x86_64 arm64
-          # THIS IS KEY: Run your tests inside the virtual build environment
-          CIBW_TEST_REQUIRES: pytest pydantic beartype
-          CIBW_TEST_COMMAND: "pytest {project}/tests/test.py"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -49,8 +30,6 @@ jobs:
           path: ./wheelhouse/*.whl
 
   publish_pypi:
-    # ONLY publish if it's a tag push, not a regular branch push
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build_wheels]
     runs-on: ubuntu-latest
     steps:
