@@ -20,8 +20,7 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.16.5
         env:
-          # Stable versions only; skipping experimental 3.14 to avoid source builds
-          CIBW_BUILD: cp311-* cp312-* cp313-*
+          CIBW_BUILD: cp311-* cp312-* cp313-* cp314-*
           CIBW_ARCHS_MACOS: x86_64 arm64
 
       - uses: actions/upload-artifact@v4
