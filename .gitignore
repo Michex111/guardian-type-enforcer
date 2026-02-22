@@ -12,6 +12,9 @@ build/
 *.pyd
 *.so
 
+#Private tests
+test2.py
+
 # Environments
 .venv/
 venv/

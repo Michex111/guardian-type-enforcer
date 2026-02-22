@@ -1,11 +1,7 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <frameobject.h>
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
-#include <frameobject.h>
 #include <stddef.h>
-
 
 #if PY_VERSION_HEX < 0x030B0000
 static inline PyObject* PyFrame_GetLocals(PyFrameObject *frame) {
@@ -15,7 +11,6 @@ static inline PyObject* PyFrame_GetLocals(PyFrameObject *frame) {
     return locals;
 }
 #endif
-// ----------------------
 
 #define OP_ANY 0
 #define OP_INSTANCE 1
@@ -29,6 +24,7 @@ static inline PyObject* PyFrame_GetLocals(PyFrameObject *frame) {
 #define OP_LITERAL 9
 
 static PyObject *GuardianTypeError;
+static PyObject *GuardianAccessError;
 
 static int check_type(PyObject *obj, PyObject *rule) {
     if (rule == Py_None) return 1;
@@ -117,6 +113,105 @@ static void raise_type_error(PyObject *param_name, PyObject *expected_name, PyOb
     Py_XDECREF(val_type_name);
 }
 
+static int check_internal_access(PyObject *self, const char *name_str) {
+    if (!name_str || name_str[0] != '_') return 1;
+
+    size_t len = strlen(name_str);
+    if (len >= 4 && name_str[0] == '_' && name_str[1] == '_' && name_str[len-1] == '_' && name_str[len-2] == '_') {
+        return 1;
+    }
+
+    int is_internal = 0;
+#if PY_VERSION_HEX >= 0x030B0000
+    PyFrameObject *frame = PyThreadState_GetFrame(PyThreadState_Get());
+#else
+    PyFrameObject *frame = PyEval_GetFrame();
+    Py_XINCREF(frame);
+#endif
+
+    PyFrameObject *f = frame;
+    while (f) {
+        PyObject *locals = PyFrame_GetLocals(f);
+        if (locals) {
+            PyObject *frame_self = PyMapping_GetItemString(locals, "self");
+            if (frame_self) {
+                if (frame_self == self) is_internal = 1;
+                Py_DECREF(frame_self);
+            } else {
+                PyErr_Clear();
+            }
+            Py_DECREF(locals);
+        }
+        if (is_internal) break;
+
+#if PY_VERSION_HEX >= 0x03090000
+        PyFrameObject *back = PyFrame_GetBack(f);
+#else
+        PyFrameObject *back = f->f_back;
+        Py_XINCREF(back);
+#endif
+        Py_DECREF(f);
+        f = back;
+    }
+    if (f) Py_DECREF(f);
+
+    return is_internal;
+}
+
+static int shield_setattro(PyObject *self, PyObject *name, PyObject *value) {
+    if (!PyUnicode_Check(name)) return PyObject_GenericSetAttr(self, name, value);
+
+    const char *name_str = PyUnicode_AsUTF8(name);
+
+    if (!check_internal_access(self, name_str)) {
+        PyErr_Format(GuardianAccessError, "External access denied: Cannot modify protected/private attribute '%s'.", name_str);
+        return -1;
+    }
+
+    if (value == NULL) return PyObject_GenericSetAttr(self, name, value);
+
+    PyTypeObject *type = Py_TYPE(self);
+    PyObject *rules = PyObject_GetAttrString((PyObject *)type, "__shield_rules__");
+
+    if (rules && PyDict_Check(rules)) {
+        PyObject *rule_def = PyDict_GetItem(rules, name);
+        if (rule_def) {
+            PyObject *rule = PyTuple_GET_ITEM(rule_def, 0);
+            if (!check_type(value, rule)) {
+                PyObject *expected = PyTuple_GET_ITEM(rule_def, 1);
+                raise_type_error(name, expected, value);
+                Py_DECREF(rules);
+                return -1;
+            }
+        }
+    }
+    if (rules) Py_DECREF(rules); else PyErr_Clear();
+
+    return PyObject_GenericSetAttr(self, name, value);
+}
+
+static PyObject* shield_getattro(PyObject *self, PyObject *name) {
+    if (!PyUnicode_Check(name)) return PyObject_GenericGetAttr(self, name);
+
+    const char *name_str = PyUnicode_AsUTF8(name);
+    if (!check_internal_access(self, name_str)) {
+        PyErr_Format(GuardianAccessError, "External access denied: Cannot read protected/private attribute '%s'.", name_str);
+        return NULL;
+    }
+
+    return PyObject_GenericGetAttr(self, name);
+}
+
+static PyTypeObject ShieldBaseType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "guardian._guardian_core.ShieldBase",
+    .tp_basicsize = sizeof(PyObject),
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_getattro = shield_getattro,
+    .tp_setattro = shield_setattro,
+    .tp_new = PyType_GenericNew,
+};
+
 typedef struct {
     PyObject_HEAD
     vectorcallfunc vectorcall;
@@ -190,25 +285,26 @@ static PyTypeObject GuardType = {
     .tp_call = PyVectorcall_Call,
 };
 
+// -------------------------------------------------------------
+// STRICT GUARD FIX: Removed clunky local_types dictionary
+// -------------------------------------------------------------
 typedef struct {
     PyObject_HEAD
     vectorcallfunc vectorcall;
     PyObject *func;
-    PyObject *func_code; // Fast-path Cache
+    PyObject *func_code;
     PyObject *rules;
     PyObject *kw_names;
     PyObject *ret_rule;
     PyObject *ret_name;
-    PyObject *local_types;
     int check_return;
 } StrictGuardObject;
 
 static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg) {
-    if (what != PyTrace_LINE && what != PyTrace_RETURN) return 0;
+    // 1. FAST EXIT: Only inspect locals when the function is finished and returning
+    if (what != PyTrace_RETURN) return 0;
 
     StrictGuardObject *self = (StrictGuardObject *)obj;
-
-    // Fast pointer comparison using our cached __code__
     PyCodeObject *f_code = PyFrame_GetCode(frame);
     int is_target = ((PyObject *)f_code == self->func_code);
     Py_XDECREF(f_code);
@@ -218,80 +314,45 @@ static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyOb
     PyObject *locals = PyFrame_GetLocals(frame);
     if (!locals) return 0;
 
-    // Python 3.13 Fix: Dump the FrameLocalsProxy into a real dict for fast iteration
-    PyObject *locals_dict = PyDict_New();
-    if (!locals_dict) {
-        Py_DECREF(locals);
-        return -1;
-    }
-    if (PyDict_Update(locals_dict, locals) < 0) {
-        PyErr_Clear();
-    }
+    // 2. O(1) LOOKUP: Pluck the exact variables we need straight from the Proxy
+    Py_ssize_t nrules = PyTuple_GET_SIZE(self->rules);
+    for (Py_ssize_t i = 0; i < nrules; i++) {
+        PyObject *rule_def = PyTuple_GET_ITEM(self->rules, i);
+        PyObject *key = PyTuple_GET_ITEM(rule_def, 0);
+        PyObject *rule = PyTuple_GET_ITEM(rule_def, 2);
 
-    PyObject *frame_id = PyLong_FromVoidPtr(frame);
-    PyObject *frame_locals_meta = PyDict_GetItem(self->local_types, frame_id);
+        const char *key_str = PyUnicode_AsUTF8(key);
+        PyObject *val = PyMapping_GetItemString(locals, key_str);
 
-    if (!frame_locals_meta) {
-        frame_locals_meta = PyDict_New();
-        PyDict_SetItem(self->local_types, frame_id, frame_locals_meta);
-        Py_DECREF(frame_locals_meta);
-
-        Py_ssize_t nrules = PyTuple_GET_SIZE(self->rules);
-        for (Py_ssize_t i = 0; i < nrules; i++) {
-            PyObject *rule_def = PyTuple_GET_ITEM(self->rules, i);
-            PyDict_SetItem(frame_locals_meta, PyTuple_GET_ITEM(rule_def, 0), rule_def);
-        }
-    }
-
-    PyObject *key, *value;
-    Py_ssize_t pos = 0;
-    while (PyDict_Next(locals_dict, &pos, &key, &value)) {
-        PyObject *rule_def = PyDict_GetItem(frame_locals_meta, key);
-        if (rule_def) {
-            PyObject *rule = PyTuple_GET_ITEM(rule_def, 2);
-            if (!check_type(value, rule)) {
-                raise_type_error(key, PyTuple_GET_ITEM(rule_def, 1), value);
-                Py_DECREF(locals_dict);
+        if (val) {
+            if (!check_type(val, rule)) {
+                raise_type_error(key, PyTuple_GET_ITEM(rule_def, 1), val);
+                Py_DECREF(val);
                 Py_DECREF(locals);
-                Py_DECREF(frame_id);
-                return -1;
+                return -1; // Abort and raise
             }
+            Py_DECREF(val);
         } else {
-            PyObject *type_rule = PyTuple_Pack(2, PyLong_FromLong(OP_EXACT), (PyObject *)Py_TYPE(value));
-            PyObject *type_name = PyObject_GetAttrString((PyObject *)Py_TYPE(value), "__name__");
-            PyObject *new_rule_def = PyTuple_Pack(3, key, type_name, type_rule);
-            PyDict_SetItem(frame_locals_meta, key, new_rule_def);
-            Py_DECREF(type_rule);
-            Py_DECREF(type_name);
-            Py_DECREF(new_rule_def);
+            PyErr_Clear(); // Variable might not be initialized in this logic path, ignore.
         }
     }
 
-    if (what == PyTrace_RETURN) {
-        if (PyDict_Contains(self->local_types, frame_id)) {
-            PyDict_DelItem(self->local_types, frame_id);
-        }
-    }
-
-    Py_DECREF(locals_dict);
     Py_DECREF(locals);
-    Py_DECREF(frame_id);
     return 0;
 }
 
 static PyObject *StrictGuard_vectorcall(PyObject *self_obj, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
     StrictGuardObject *self = (StrictGuardObject *)self_obj;
 
-    // Python 3.11+ Fix: Do not poke into PyThreadState directly.
-    // We just set our trace function using the public API.
-    PyEval_SetTrace(strict_trace_func, self_obj);
+    // 3. PROFILER FIX: SetProfile instead of SetTrace drops O(N) line-checking completely
+    PyEval_SetProfile(strict_trace_func, self_obj);
 
     Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
     Py_ssize_t nrules = PyTuple_GET_SIZE(self->rules);
     for (Py_ssize_t i = 0; i < nargs && i < nrules; i++) {
         PyObject *rule_def = PyTuple_GET_ITEM(self->rules, i);
         if (!check_type(args[i], PyTuple_GET_ITEM(rule_def, 2))) {
-            PyEval_SetTrace(NULL, NULL); // Clear trace on early exit
+            PyEval_SetProfile(NULL, NULL);
             raise_type_error(PyTuple_GET_ITEM(rule_def, 0), PyTuple_GET_ITEM(rule_def, 1), args[i]);
             return NULL;
         }
@@ -299,8 +360,8 @@ static PyObject *StrictGuard_vectorcall(PyObject *self_obj, PyObject *const *arg
 
     PyObject *result = PyObject_Vectorcall(self->func, args, nargsf, kwnames);
 
-    // Python 3.11+ Fix: Clear the trace function using public API
-    PyEval_SetTrace(NULL, NULL);
+    // Clear profiler immediately
+    PyEval_SetProfile(NULL, NULL);
 
     if (result && self->check_return && self->ret_rule != Py_None) {
         if (!check_type(result, self->ret_rule)) {
@@ -319,7 +380,6 @@ static void StrictGuard_dealloc(StrictGuardObject *self) {
     Py_XDECREF(self->kw_names);
     Py_XDECREF(self->ret_rule);
     Py_XDECREF(self->ret_name);
-    Py_XDECREF(self->local_types);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -360,7 +420,6 @@ static PyObject* make_strictguard(PyObject *module, PyObject *args) {
     guard->vectorcall = StrictGuard_vectorcall;
     guard->func = func;
 
-    // Fast-path Cache target code object
     guard->func_code = PyObject_GetAttrString(func, "__code__");
     if (!guard->func_code) PyErr_Clear();
 
@@ -369,7 +428,6 @@ static PyObject* make_strictguard(PyObject *module, PyObject *args) {
     guard->ret_rule = ret_rule;
     guard->ret_name = ret_name;
     guard->check_return = check_return;
-    guard->local_types = PyDict_New();
 
     return (PyObject *)guard;
 }
@@ -382,7 +440,7 @@ static PyMethodDef GuardianMethods[] = {
 
 static struct PyModuleDef guardianmodule = {
     PyModuleDef_HEAD_INIT,
-    "_guardian_core", // Ensure this matches the Extension name in setup.py
+    "_guardian_core",
     "C core for guardian type enforcement",
     -1,
     GuardianMethods
@@ -396,11 +454,19 @@ PyMODINIT_FUNC PyInit__guardian_core(void) {
     Py_XINCREF(GuardianTypeError);
     PyModule_AddObject(m, "GuardianTypeError", GuardianTypeError);
 
+    GuardianAccessError = PyErr_NewException("guardian.GuardianAccessError", PyExc_AttributeError, NULL);
+    Py_XINCREF(GuardianAccessError);
+    PyModule_AddObject(m, "GuardianAccessError", GuardianAccessError);
+
     GuardType.tp_vectorcall_offset = offsetof(GuardObject, vectorcall);
     if (PyType_Ready(&GuardType) < 0) return NULL;
 
     StrictGuardType.tp_vectorcall_offset = offsetof(StrictGuardObject, vectorcall);
     if (PyType_Ready(&StrictGuardType) < 0) return NULL;
+
+    if (PyType_Ready(&ShieldBaseType) < 0) return NULL;
+    Py_INCREF(&ShieldBaseType);
+    PyModule_AddObject(m, "ShieldBase", (PyObject *)&ShieldBaseType);
 
     return m;
 }

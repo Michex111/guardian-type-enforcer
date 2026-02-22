@@ -1,6 +1,6 @@
 import timeit
 import gc
-from guardian import guard, strictguard
+from guardian import guard, strictguard, shield
 try:
     from beartype import beartype
 except ImportError:
@@ -37,3 +37,4 @@ if __name__ == "__main__":
     print(f"{'Guardian C':<15} | {t_guard:<10.4f} | {(t_guard - t_plain) / n * 1e6:<10.3f}")
     print(f"{'StrictGuard C':<15} | {t_strict:<10.4f} | {(t_strict - t_plain) / n * 1e6:<10.3f}")
     print(f"{'Beartype':<15} | {t_bear:<10.4f} | {(t_bear - t_plain) / n * 1e6:<10.3f}")
+
