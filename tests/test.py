@@ -7,9 +7,8 @@ from beartype import beartype
 from beartype.roar import BeartypeCallHintParamViolation, BeartypeCallHintReturnViolation
 
 
-from guardian.guard import guard
-from guardian.deepguard import deepguard
-from guardian.shield import shield
+from guardian.guard_set import guard, deepguard
+from guardian.shield import Shield
 from guardian._guardian_core import GuardianTypeError, GuardianAccessError
 
 
@@ -46,7 +45,7 @@ def guard_optional(val: Optional[str]) -> str:
   return val if val else "default"
 
 
-class Cat(shield):
+class Cat(Shield):
   name: str
   age: int
   _internal_id: int

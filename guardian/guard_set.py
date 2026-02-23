@@ -55,21 +55,53 @@ def _compile_signature(func: Callable):
   return tuple(pos_rules), kw_rules, ret_rule, ret_name, check_return
 
 
-def guard(func: Callable) -> Callable:
+def guard(func=None, *, check_return: bool = True) -> Callable:
   """
   Creates a guarded version of the provided function, enforcing rules defined
   by the compiled signature. This ensures that the input parameters and return
   value adhere to the specified constraints during runtime.
 
   :param func: The function to be wrapped and guarded.
-  :type func: Callable
+  :param check_return: If False, skips validating the function's return type for maximum performance.
   :return: A new function with the guarding behavior applied.
-  :rtype: Callable
   """
-  pos_rules, kw_rules, ret_rule, ret_name, check_return = _compile_signature(func)
-  return _guardian_core.make_guard(func, pos_rules, kw_rules, ret_rule, ret_name, check_return)
+  # Handle the case where the decorator is called with arguments: @guard(check_return=False)
+  if func is None:
+    return lambda f: guard(f, check_return=check_return)
+
+  pos_rules, kw_rules, ret_rule, ret_name, has_return_annotation = _compile_signature(func)
+
+  # Only enforce if the user wants it AND the function actually has a return annotation
+  enforce_return = check_return and has_return_annotation
+
+  return _guardian_core.make_guard(func, pos_rules, kw_rules, ret_rule, ret_name, enforce_return)
 
 
-def deepguard(func: Callable) -> Callable:
-  pos_rules, kw_rules, ret_rule, ret_name, check_return = _compile_signature(func)
-  return _guardian_core.make_strictguard(func, pos_rules, kw_rules, ret_rule, ret_name, check_return)
+def deepguard(func=None, *, check_return: bool = True) -> Callable:
+  """
+    Apply a strict, tracing-based guarding mechanism for deep runtime auditing.
+
+    Unlike standard `@guard`, `deepguard` hooks directly into the Python evaluator
+    to monitor internal frame execution. It ensures that not only the boundaries
+    (inputs and outputs) are strictly typed, but it also prevents invalid internal
+    mutations of tracked variables during the function's lifecycle.
+
+    Because of its deep tracing nature, `deepguard` incurs performance overhead
+    and is best utilized as a strict development, debugging, or auditing tool
+    rather than in high-performance production loops.
+
+    :param func: The target function to be deeply audited. If not provided,
+        the decorator can be applied with additional configuration options.
+    :type func: Callable, optional
+    :param check_return: If True, validates the return value against its type
+        annotation upon function exit. Defaults to True.
+    :return: A strictly guarded function that performs deep runtime type enforcement.
+    :rtype: Callable
+  """
+  if func is None:
+    return lambda f: deepguard(f, check_return=check_return)
+
+  pos_rules, kw_rules, ret_rule, ret_name, has_return_annotation = _compile_signature(func)
+  enforce_return = check_return and has_return_annotation
+
+  return _guardian_core.make_strictguard(func, pos_rules, kw_rules, ret_rule, ret_name, enforce_return)

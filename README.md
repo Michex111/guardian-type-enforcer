@@ -1,6 +1,6 @@
 # 🛡️ Guardian — Sub-Microsecond Runtime Type Enforcement & Access Control for Python
 
-Guardian is a blazing-fast runtime type enforcer and data validation framework for Python 3.10+.
+Guardian is a blazing-fast runtime type enforcer and data validation framework for Python 3.11+.
 
 Unlike traditional Python validation libraries that rely on slow dictionary wrappers, getattr proxies, or __dict__ parsing, Guardian is written entirely as a native C-extension. It intercepts assignments directly at the memory level via the CPython API, delivering O(1) validation that outperforms industry standards like Pydantic (Rust) and Beartype.
 
@@ -45,23 +45,25 @@ The `shield` class is a high-performance alternative to `@dataclass` or `pydanti
 By inheriting from `shield`, your class becomes a native C-type (`ShieldBase`). It enforces strict typing on all annotated attributes and provides true protected/private access control.
 
 ```python
-from guardian.shield import shield
+from guardian.shield import Shield
 from guardian._guardian_core import GuardianTypeError, GuardianAccessError
 
-class User(shield):
-    username: str
-    age: int
-    _internal_id: int  # Attributes starting with '_' are private
 
-    def __init__(self, username: str, age: int):
-        self.username = username
-        self.age = age
-        self._internal_id = 9999
+class User(Shield):
+  username: str
+  age: int
+  _internal_id: int  # Attributes starting with '_' are private
+
+  def __init__(self, username: str, age: int):
+    self.username = username
+    self.age = age
+    self._internal_id = 9999
+
 
 # --- 1. Type Enforcement ---
 user = User("Michex", 25)
 
-user.age = 26        # OK
+user.age = 26  # OK
 user.age = "twenty"  # ❌ Raises GuardianTypeError
 
 # --- 2. True Private Access Control ---
@@ -80,11 +82,13 @@ Supports deeply nested types like `dict[str, list[int | float]]`.
 
 ```python
 from typing import Union
-from guardian.guard import guard
+from guardian import guard
+
 
 @guard
 def process_sensor_data(payload: dict[str, list[Union[int, float]]]) -> bool:
-    return True
+  return True
+
 
 # Valid payload
 process_sensor_data({"sensor_A": [1, 2.5, 3]})
@@ -92,6 +96,14 @@ process_sensor_data({"sensor_A": [1, 2.5, 3]})
 # Invalid payload
 process_sensor_data({"sensor_A": [1, 2.5, "3.0"]})
 # ❌ Raises GuardianTypeError
+
+# ignore return
+@guard(check_return=False)
+def process_data(payload: list[int | str]) -> int:
+  return True
+
+process_data([1, "2"])
+# ✅ successful 
 ```
 
 **How it works:**  
@@ -104,7 +116,7 @@ Signatures are compiled into C-structs at import time. During runtime, validatio
 While `@guard` checks inputs and outputs, `@deepguard` acts as a rigorous state machine enforcer. It ensures that local variables inside your function never mutate into unexpected types during execution.
 
 ```python
-from guardian.deepguard import deepguard
+from guardian import deepguard
 
 @deepguard
 def calculate_discount(price: float) -> float:
@@ -117,7 +129,11 @@ def calculate_discount(price: float) -> float:
 ```
 
 **Note:**  
-`@deepguard` utilizes `PyEval_SetProfile` to intercept the local dictionary state upon function return. Because it hooks into interpreter profiling, it carries a ~43µs overhead and should be reserved for high-stakes business logic.
+`@deepguard` utilizes `PyEval_SetProfile` to intercept the local dictionary state upon function return. Because it hooks into interpreter profiling, it carries a ~43µs overhead and should be reserved for high-stakes business logic. 
+
+Because of its deep tracing nature, `deepguard` incurs performance overhead 
+  and is best utilized as a strict development, debugging, or auditing tool 
+  rather than in high-performance production loops.
 
 ---
 

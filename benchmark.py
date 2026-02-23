@@ -3,9 +3,8 @@ from typing import Union, List, Dict
 from pydantic import BaseModel
 from beartype import beartype
 
-from guardian.guard import guard
-from guardian.deepguard import deepguard
-from guardian.shield import shield
+from guardian.guard_set import guard, deepguard
+from guardian.shield import Shield
 
 
 # ==========================================
@@ -31,7 +30,7 @@ def beartype_add(a: int, b: int) -> int:
   return a + b
 
 
-class ShieldCat(shield):
+class ShieldCat(Shield):
   name: str
   age: int
 
