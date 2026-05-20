@@ -25,7 +25,6 @@ jobs:
         uses: pypa/cibuildwheel@v2.22.0
         env:
           CIBW_BUILD: "cp311-* cp312-* cp313-* cp313t-* cp314-* cp314t-*"
-          CIBW_ENABLE: "cpython-freethreading"
           CIBW_PRERELEASE_PYTHONS: "True"
           CIBW_ARCHS_MACOS: x86_64 arm64
           # PEP 668 fix: cibuildwheel manages its own isolated envs, 
