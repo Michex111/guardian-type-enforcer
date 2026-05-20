@@ -49,6 +49,5 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          # Note: ensure you are using the modern 'password' field 
-          # which accepts your API Token.
+          user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
