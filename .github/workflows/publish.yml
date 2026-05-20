@@ -22,7 +22,7 @@ jobs:
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@latest
+        uses: pypa/cibuildwheel@v2.22.0
         env:
           CIBW_BUILD: cp311-* cp312-* cp313-* cp314-*
           CIBW_PRERELEASE_PYTHONS: "True"
