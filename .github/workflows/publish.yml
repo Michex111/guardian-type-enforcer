@@ -11,23 +11,25 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # High-performance OS matrix for cross-compilation
+        # Use latest runners to ensure support for newest Python releases
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: List detected Python versions
-        run: |
-          python3 -m pip install cibuildwheel
-          cibuildwheel --print-build-identifiers
+      # 1. Setup a fresh isolated environment using uv
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.22.0
+        uses: pypa/cibuildwheel@latest
         env:
           CIBW_BUILD: cp311-* cp312-* cp313-* cp314-*
           CIBW_PRERELEASE_PYTHONS: "True"
           CIBW_ARCHS_MACOS: x86_64 arm64
+          # PEP 668 fix: cibuildwheel manages its own isolated envs, 
+          # but we ensure no system-wide installs leak in.
+          CIBW_BEFORE_BUILD: "pip install uv"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -47,5 +49,6 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          user: __token__
+          # Note: ensure you are using the modern 'password' field 
+          # which accepts your API Token.
           password: ${{ secrets.PYPI_API_TOKEN }}
