@@ -17,10 +17,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: List detected Python versions
+        run: |
+          python3 -m pip install cibuildwheel
+          cibuildwheel --print-build-identifiers
+
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.22.0
         env:
           CIBW_BUILD: cp311-* cp312-* cp313-* cp314-*
+          CIBW_PRERELEASE_PYTHONS: "True"
           CIBW_ARCHS_MACOS: x86_64 arm64
 
       - uses: actions/upload-artifact@v4
