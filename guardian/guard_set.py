@@ -1,5 +1,7 @@
 import typing
 import inspect
+import ast
+import textwrap
 from typing import Callable, Any
 
 from ._compiler import compile_rule, format_type_name
@@ -7,6 +9,28 @@ from . import _guardian_core
 
 PRIMITIVES = {int, str, float, bool, type(None)}
 
+
+def _extract_local_annotations(func: Callable) -> dict:
+    """Parses the function AST to extract local variable annotations."""
+    local_hints = {}
+    try:
+        source = textwrap.dedent(inspect.getsource(func))
+        tree = ast.parse(source)
+    except Exception:
+        return local_hints
+
+    for node in ast.walk(tree):
+        # Look for explicit variable annotations (e.g., var: type)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            var_name = node.target.id
+            try:
+                ann_str = ast.unparse(node.annotation)
+                # Evaluate in the function's global context to resolve standard types
+                resolved_type = eval(ann_str, func.__globals__)
+                local_hints[var_name] = resolved_type
+            except Exception:
+                pass
+    return local_hints
 
 def _compile_signature(func: Callable):
   """Pre-compiles signatures into aligned positional arrays and kwarg dictionaries for O(1) C-lookups."""
@@ -103,5 +127,14 @@ def deepguard(func=None, *, check_return: bool = True) -> Callable:
 
   pos_rules, kw_rules, ret_rule, ret_name, has_return_annotation = _compile_signature(func)
   enforce_return = check_return and has_return_annotation
+
+  # Dynamically parse and append local variable annotations to the C-tracker
+  local_annotations = _extract_local_annotations(func)
+  for var_name, annotation in local_annotations.items():
+      if var_name not in kw_rules:
+          raw_rule = compile_rule(annotation)
+          if annotation in PRIMITIVES and raw_rule[0] == 1:
+              raw_rule = (2, raw_rule[1])
+          kw_rules[var_name] = (var_name, format_type_name(annotation), raw_rule)
 
   return _guardian_core.make_strictguard(func, pos_rules, kw_rules, ret_rule, ret_name, enforce_return)

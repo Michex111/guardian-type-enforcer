@@ -33,6 +33,7 @@ static inline PyObject* PyFrame_GetLocals(PyFrameObject *frame) {
 
 static PyObject *GuardianTypeError;
 static PyObject *GuardianAccessError;
+static PyObject *GuardianInitializationError;
 
 static int fast_check_type(PyObject *obj, PyObject *rule) {
     if (unlikely(rule == Py_None)) return 1;
@@ -345,6 +346,8 @@ static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyOb
     PyObject *key, *rule_def;
     Py_ssize_t pos = 0;
     
+    // Modify strict_trace_func around line 273:
+
     while (PyDict_Next(self->kw_rules, &pos, &key, &rule_def)) {
         // THE FIX: PyObject_GetItem respects modern Python proxy mappings while 
         // retaining the O(1) string lookup performance win.
@@ -360,8 +363,13 @@ static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyOb
             }
             Py_DECREF(val); // Clean up the new reference
         } else {
-            // If the variable doesn't exist yet, it raises a KeyError. Clear it.
+            // STRICT ENFORCEMENT: The variable was declared but never initialized
             PyErr_Clear();
+            PyErr_Format(GuardianInitializationError, 
+                         "Variable '%U' was declared as %U but was never initialized before return.", 
+                         key, PyTuple_GET_ITEM(rule_def, 1));
+            Py_DECREF(locals);
+            return -1;
         }
     }
     
@@ -623,6 +631,10 @@ PyMODINIT_FUNC PyInit__guardian_core(void) {
     GuardianAccessError = PyErr_NewException("guardian.GuardianAccessError", PyExc_AttributeError, NULL);
     Py_XINCREF(GuardianAccessError);
     PyModule_AddObject(m, "GuardianAccessError", GuardianAccessError);
+
+    GuardianInitializationError = PyErr_NewException("guardian.GuardianInitializationError", PyExc_UnboundLocalError, NULL);
+    Py_XINCREF(GuardianInitializationError);
+    PyModule_AddObject(m, "GuardianInitializationError", GuardianInitializationError);
 
     GuardType.tp_vectorcall_offset = offsetof(GuardObject, vectorcall);
     if (PyType_Ready(&GuardType) < 0) return NULL;
