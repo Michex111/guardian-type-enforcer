@@ -3,13 +3,13 @@ import inspect
 from typing import Any
 
 from .guard_set import guard
-from .compiler import compile_rule, format_type_name
+from ._compiler import compile_rule, format_type_name
 from . import _guardian_core
 
 PRIMITIVES = {int, str, float, bool, type(None)}
 
 
-class Shield(_guardian_core.ShieldBase):
+class Shield(_guardian_core.ShieldBase, metaclass=_guardian_core.ShieldMeta):
   """
   Provides a base for creating shielded classes that enforce attribute-type rules.
 

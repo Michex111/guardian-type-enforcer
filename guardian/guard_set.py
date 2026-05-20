@@ -2,7 +2,7 @@ import typing
 import inspect
 from typing import Callable, Any
 
-from .compiler import compile_rule, format_type_name
+from ._compiler import compile_rule, format_type_name
 from . import _guardian_core
 
 PRIMITIVES = {int, str, float, bool, type(None)}

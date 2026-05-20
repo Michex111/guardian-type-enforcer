@@ -16,6 +16,9 @@ build/
 test2.py
 test_guardian.py
 
+AGENTS.md
+notes.txt
+
 # Environments
 .venv/
 venv/

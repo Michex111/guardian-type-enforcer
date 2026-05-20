@@ -141,12 +141,24 @@ static int check_internal_access(PyObject *self, const char *name_str) {
     while (f) {
         PyObject *locals = PyFrame_GetLocals(f);
         if (locals) {
+            // 1. Check for standard 'self' (Instance methods)
             PyObject *frame_self = PyMapping_GetItemString(locals, "self");
             if (frame_self) {
                 if (frame_self == self) is_internal = 1;
                 Py_DECREF(frame_self);
             } else {
                 PyErr_Clear();
+            }
+
+            // 2. Check for 'cls' (Class methods)
+            if (!is_internal) {
+                PyObject *frame_cls = PyMapping_GetItemString(locals, "cls");
+                if (frame_cls) {
+                    if (frame_cls == self) is_internal = 1;
+                    Py_DECREF(frame_cls);
+                } else {
+                    PyErr_Clear();
+                }
             }
             Py_DECREF(locals);
         }
@@ -202,30 +214,14 @@ static int shield_setattro(PyObject *self, PyObject *name, PyObject *value) {
     return PyObject_GenericSetAttr(self, name, value);
 }
 
-static PyObject* shield_getattro(PyObject *self, PyObject *name) {
-    if (unlikely(!PyUnicode_Check(name))) return PyObject_GenericGetAttr(self, name);
-
-    const char *name_str = PyUnicode_AsUTF8(name);
-    if (unlikely(name_str[0] == '_')) {
-        size_t len = strlen(name_str);
-        if (!(len >= 4 && name_str[1] == '_' && name_str[len-1] == '_' && name_str[len-2] == '_')) {
-            if (!check_internal_access(self, name_str)) {
-                PyErr_Format(GuardianAccessError, "External access denied: Cannot read protected/private attribute '%s'.", name_str);
-                return NULL;
-            }
-        }
-    }
-
-    return PyObject_GenericGetAttr(self, name);
-}
 
 static PyTypeObject ShieldBaseType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "guardian._guardian_core.ShieldBase",
     .tp_basicsize = sizeof(PyObject),
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
-    .tp_getattro = shield_getattro,
-    .tp_setattro = shield_setattro,
+    .tp_getattro = PyObject_GenericGetAttr,  // <--- BYPASS CUSTOM LOGIC ENTIRELY
+    .tp_setattro = shield_setattro,          // Keep the write protection
     .tp_new = PyType_GenericNew,
 };
 
@@ -348,8 +344,12 @@ static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyOb
 
     PyObject *key, *rule_def;
     Py_ssize_t pos = 0;
+    
     while (PyDict_Next(self->kw_rules, &pos, &key, &rule_def)) {
-        PyObject *val = PyMapping_GetItemString(locals, PyUnicode_AsUTF8(key));
+        // THE FIX: PyObject_GetItem respects modern Python proxy mappings while 
+        // retaining the O(1) string lookup performance win.
+        PyObject *val = PyObject_GetItem(locals, key); 
+        
         if (val) {
             PyObject *rule = PyTuple_GET_ITEM(rule_def, 2);
             if (unlikely(!fast_check_type(val, rule))) {
@@ -358,11 +358,13 @@ static int strict_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyOb
                 Py_DECREF(locals);
                 return -1;
             }
-            Py_DECREF(val);
+            Py_DECREF(val); // Clean up the new reference
         } else {
+            // If the variable doesn't exist yet, it raises a KeyError. Clear it.
             PyErr_Clear();
         }
     }
+    
     Py_DECREF(locals);
     return 0;
 }
@@ -438,7 +440,7 @@ static PyTypeObject StrictGuardType = {
     .tp_dealloc = (destructor)StrictGuard_dealloc,
     .tp_call = PyVectorcall_Call,
     .tp_getattro = StrictGuard_getattro,
-    .tp_descr_get = Guard_descr_get, // Binds method accurately
+    .tp_descr_get = Guard_descr_get,
 };
 
 static PyObject* make_guard(PyObject *module, PyObject *args) {
@@ -478,9 +480,131 @@ static PyObject* make_strictguard(PyObject *module, PyObject *args) {
     return (PyObject *)guard;
 }
 
+// --- C FIELD DESCRIPTOR FOR DATACLASSES ---
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *name;
+    PyObject *private_name;
+    PyObject *rule;
+    PyObject *expected_name;
+    PyObject *custom_validator;
+} CFieldDescriptorObject;
+
+static void CFieldDescriptor_dealloc(CFieldDescriptorObject *self) {
+    Py_XDECREF(self->name);
+    Py_XDECREF(self->private_name);
+    Py_XDECREF(self->rule);
+    Py_XDECREF(self->expected_name);
+    Py_XDECREF(self->custom_validator);
+    Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
+static PyObject *CFieldDescriptor_descr_get(PyObject *self, PyObject *obj, PyObject *type) {
+    if (obj == NULL || obj == Py_None) {
+        Py_INCREF(self);
+        return self;
+    }
+    return PyObject_GenericGetAttr(obj, ((CFieldDescriptorObject *)self)->private_name);
+}
+
+static int CFieldDescriptor_descr_set(PyObject *self_obj, PyObject *obj, PyObject *value) {
+    CFieldDescriptorObject *self = (CFieldDescriptorObject *)self_obj;
+
+    if (unlikely(value == NULL)) {
+        PyErr_Format(PyExc_AttributeError, "Cannot delete guarded dataclass attribute '%U'", self->name);
+        return -1;
+    }
+
+    // 1. Fast Path Validation using existing C logic
+    if (unlikely(!fast_check_type(value, self->rule))) {
+        raise_type_error(self->name, self->expected_name, value);
+        return -1;
+    }
+
+    // 2. Custom Validator Hook (if provided by user)
+    PyObject *final_value = value;
+    if (self->custom_validator != Py_None) {
+        PyObject *cls = (PyObject *)Py_TYPE(obj);
+        PyObject *args = PyTuple_Pack(2, cls, value);
+        final_value = PyObject_CallObject(self->custom_validator, args);
+        Py_DECREF(args);
+        
+        if (final_value == NULL) return -1; // Exception raised inside custom validator
+    } else {
+        Py_INCREF(final_value);
+    }
+
+    // 3. Set the attribute bypasses Python dict lookup
+    int res = PyObject_GenericSetAttr(obj, self->private_name, final_value);
+    Py_DECREF(final_value);
+    return res;
+}
+
+static PyTypeObject CFieldDescriptorType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "guardian._guardian_core.CFieldDescriptor",
+    .tp_basicsize = sizeof(CFieldDescriptorObject),
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_dealloc = (destructor)CFieldDescriptor_dealloc,
+    .tp_descr_get = CFieldDescriptor_descr_get,
+    .tp_descr_set = CFieldDescriptor_descr_set,
+};
+
+// Factory function to instantiate the descriptor from Python
+static PyObject* make_c_descriptor(PyObject *module, PyObject *args) {
+    PyObject *name, *private_name, *rule, *expected_name, *custom_val;
+    if (!PyArg_ParseTuple(args, "OOOOO", &name, &private_name, &rule, &expected_name, &custom_val)) return NULL;
+
+    CFieldDescriptorObject *desc = PyObject_New(CFieldDescriptorObject, &CFieldDescriptorType);
+    
+    Py_INCREF(name); Py_INCREF(private_name); Py_INCREF(rule); 
+    Py_INCREF(expected_name); Py_INCREF(custom_val);
+    
+    desc->name = name;
+    desc->private_name = private_name;
+    desc->rule = rule;
+    desc->expected_name = expected_name;
+    desc->custom_validator = custom_val;
+    
+    return (PyObject *)desc;
+}
+
+// --- CLASS-LEVEL METACLASS PROTECTION ---
+
+static int shield_meta_setattro(PyObject *cls, PyObject *name, PyObject *value) {
+    if (unlikely(!PyUnicode_Check(name))) return PyType_Type.tp_setattro(cls, name, value);
+
+    const char *name_str = PyUnicode_AsUTF8(name);
+
+    if (unlikely(name_str[0] == '_')) {
+        size_t len = strlen(name_str);
+        // Ignore standard dunders (like __module__ or __shield_rules__)
+        if (!(len >= 4 && name_str[1] == '_' && name_str[len-1] == '_' && name_str[len-2] == '_')) {
+            // Perform the C-level internal frame check against the class object itself
+            if (!check_internal_access(cls, name_str)) {
+                PyErr_Format(GuardianAccessError, "External access denied: Cannot modify protected/private class attribute '%s'.", name_str);
+                return -1;
+            }
+        }
+    }
+
+    // Delegate the actual assignment to Python's core type implementation
+    return PyType_Type.tp_setattro(cls, name, value);
+}
+
+static PyTypeObject ShieldMetaType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "guardian._guardian_core.ShieldMeta",
+    .tp_basicsize = sizeof(PyHeapTypeObject), // Required size for metaclasses in C
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_setattro = shield_meta_setattro,      // Intercepts MyClass._var = 5
+};
+
 static PyMethodDef GuardianMethods[] = {
     {"make_guard", make_guard, METH_VARARGS, "Create a C-level guard wrapper"},
     {"make_strictguard", make_strictguard, METH_VARARGS, "Create a C-level strictguard wrapper"},
+    {"make_c_descriptor", make_c_descriptor, METH_VARARGS, "Create a C-level dataclass descriptor"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -509,6 +633,19 @@ PyMODINIT_FUNC PyInit__guardian_core(void) {
     if (PyType_Ready(&ShieldBaseType) < 0) return NULL;
     Py_INCREF(&ShieldBaseType);
     PyModule_AddObject(m, "ShieldBase", (PyObject *)&ShieldBaseType);
+
+    if (PyType_Ready(&CFieldDescriptorType) < 0) return NULL;
+
+    // Register ShieldBase
+    if (PyType_Ready(&ShieldBaseType) < 0) return NULL;
+    Py_INCREF(&ShieldBaseType);
+    PyModule_AddObject(m, "ShieldBase", (PyObject *)&ShieldBaseType);
+
+    // Register ShieldMeta (Inherits from type)
+    ShieldMetaType.tp_base = &PyType_Type;
+    if (PyType_Ready(&ShieldMetaType) < 0) return NULL;
+    Py_INCREF(&ShieldMetaType);
+    PyModule_AddObject(m, "ShieldMeta", (PyObject *)&ShieldMetaType);
 
     return m;
 }
