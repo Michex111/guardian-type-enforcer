@@ -18,11 +18,11 @@ guardian_core = Extension(
 
 setup(
     name="guardian-type-enforcer",
-    version="3.1.5",
+    version="3.1.6",
     ext_modules=[guardian_core],
     packages=["guardian"],
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     license="MIT",
-    python_requires=">=3.11",
+    python_requires=">=3.14",
 )
