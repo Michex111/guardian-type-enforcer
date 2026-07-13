@@ -624,6 +624,14 @@ PyMODINIT_FUNC PyInit__guardian_core(void) {
     PyObject *m = PyModule_Create(&guardianmodule);
     if (m == NULL) return NULL;
 
+    #ifdef Py_GIL_DISABLED
+    PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
+    #endif
+
+        GuardianTypeError = PyErr_NewException("guardian.GuardianTypeError", PyExc_TypeError, NULL);
+        Py_XINCREF(GuardianTypeError);
+        PyModule_AddObject(m, "GuardianTypeError", GuardianTypeError);
+
     GuardianTypeError = PyErr_NewException("guardian.GuardianTypeError", PyExc_TypeError, NULL);
     Py_XINCREF(GuardianTypeError);
     PyModule_AddObject(m, "GuardianTypeError", GuardianTypeError);
