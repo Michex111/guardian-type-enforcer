@@ -44,7 +44,6 @@ jobs:
         env:
           CIBW_BUILD:  "cp314-* cp314t-*"
           CIBW_PROJECT_REQUIRES_PYTHON: ">=3.11"
-          CIBW_ENABLE: "cpython_freethreading"
           CIBW_PRERELEASE_PYTHONS: "True"
           CIBW_ARCHS_MACOS: x86_64 arm64
           # PEP 668 fix: cibuildwheel manages its own isolated envs, 
