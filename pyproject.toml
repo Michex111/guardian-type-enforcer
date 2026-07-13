@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "guardian-type-enforcer"
-version = "4.0.5"
+version = "4.0.6"
 description = "Maximum performance runtime type enforcement using CPython C API."
 readme = "README.MD"
 requires-python = ">=3.11"
@@ -24,4 +24,4 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "beartype>=0.16.0", "typeguard>=4.1.0", "pydantic", "setuptools", "pytest-benchmark"]
+dev = ["pytest>=7.0", "typeguard>=4.1.0", "pydantic", "setuptools", "pytest-benchmark"]
