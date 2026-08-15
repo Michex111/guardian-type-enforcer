@@ -25,4 +25,4 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "typeguard>=4.1.0", "pydantic", "setuptools", "pytest-benchmark"]
+dev = ["pytest>=7.0", "typeguard>=4.1.0", "beartype", "pydantic", "setuptools", "pytest-benchmark"]
