@@ -10,7 +10,7 @@ from guardian._guardian_core import (
 @deepguard
 def local_type_corruption(seed: int) -> int:
     local_value: int = seed
-    local_value = "invalid"
+    local_value = "invalid"     #type: ignore[assignment]
     return seed
 
 
@@ -24,7 +24,7 @@ def uninitialized_local(flag: bool) -> int:
 
 @deepguard(check_return=False)
 def deepguard_no_return_check(x: int) -> int:
-    return "wrong"
+    return "wrong"  #type: ignore[return-value]
 
 
 def test_deepguard_detects_local_mutation_type_corruption() -> None:
