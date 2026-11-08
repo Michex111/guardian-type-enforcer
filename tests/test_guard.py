@@ -23,7 +23,7 @@ def passthrough(value: int, raw) -> int:
 
 @guard(check_return=False)
 def no_return_check(_: int) -> int:
-    return "not-an-int"
+    return "not-an-int"     #type: ignore[return-value]
 
 
 @guard
@@ -57,7 +57,7 @@ def test_guard_return_validation_and_bypass() -> None:
     with pytest.raises(GuardianTypeError):
         @guard
         def bad_return(_: int) -> int:
-            return "bad"
+            return "bad"       #type: ignore[return-value]
 
         bad_return(1)
 

@@ -52,7 +52,7 @@ def test_dataclass_custom_validator_error_propagates() -> None:
 def test_frozen_dataclass_raises_guardian_frozen_error() -> None:
     cfg = FrozenConfig(timeout=5)
     with pytest.raises(FrozenInstanceError):
-        cfg.timeout = 10
+        cfg.timeout = 10 #type: ignore[assignment]
 
 
 def test_asdict_recursive_filters_and_overrides() -> None:
